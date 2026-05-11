@@ -906,6 +906,36 @@ async def _handle_ses_v2_request(method: str, path: str, headers: dict, body: by
     return await _get_module("ses_v2").handle_request(method, path, headers, body, query_params)
 
 
+def _is_ecr_registry_path(path: str) -> bool:
+    """Return True iff `path` is a Docker Registry HTTP API V2 endpoint.
+
+    Shares the `/v2/` prefix with API Gateway v2 (`/v2/apis/...`,
+    `/v2/tags/{arn}`), AppSync Events (`/v2/apis`), and SES v2 (`/v2/email/...`).
+    Registry paths are distinguished by `/blobs/`, `/manifests/`, or the
+    `/tags/list` suffix — none appear in any other `/v2/*` consumer.
+    """
+    if path in ("/v2", "/v2/", "/v2/_catalog"):
+        return True
+    if not path.startswith("/v2/") or path.startswith(_SES_V2_PREFIX):
+        return False
+    return "/blobs/" in path or "/manifests/" in path or path.endswith("/tags/list")
+
+
+async def _handle_ecr_registry_request(method: str, path: str, headers: dict, body: bytes, query_params: dict):
+    """Handle Docker Registry HTTP API V2 requests (`docker push`/`docker pull`).
+
+    Real ECR exposes the V2 protocol on the same endpoint as the AWS API. We
+    must run this before the generic router so the path doesn't fall through
+    to S3 path-style addressing. The shape check above keeps every other
+    `/v2/...` consumer (apigwv2, AppSync Events, SES v2) untouched.
+    """
+    if not _is_ecr_registry_path(path):
+        return None
+    return await _get_module("ecr").handle_registry_request(
+        method, path, headers, body, query_params
+    )
+
+
 def _parse_execute_api_url(host: str, path: str) -> tuple[str, str, str] | None:
     """Resolve an execute-api request into (api_id, stage, execute_path).
 
@@ -1115,6 +1145,8 @@ async def _handle_special_data_plane_request(
         return response
     if response := await _handle_ses_v2_request(method, path, headers, body, query_params):
         return response
+    if response := await _handle_ecr_registry_request(method, path, headers, body, query_params):
+        return _with_data_plane_headers(response, request_id)
 
     host = headers.get("host", "")
     if response := await _handle_execute_api_request(host, path, method, headers, body, query_params):
