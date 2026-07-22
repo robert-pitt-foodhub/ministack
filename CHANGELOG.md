@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **API Gateway — `AWS::ApiGateway::Model` CloudFormation support** — deploying CDK/CloudFormation stacks containing request or response models previously failed with `Unsupported resource type: AWS::ApiGateway::Model`. Models now create, update, and delete against the existing API Gateway v1 model store; JSON-valued schemas are normalized to the API's string representation, generated names are supported, and `Ref` returns the model name.
 - **Batch — `UpdateComputeEnvironment`** — Terraform `aws_batch_compute_environment` with an `update_policy` block calls `UpdateComputeEnvironment`, which previously failed with `InvalidAction: Unsupported batch path: /v1/updatecomputeenvironment`. The endpoint now resolves compute environments by name or ARN, applies present fields (`state`, `serviceRole`, shallow-merged `computeResources`, `updatePolicy`, `unmanagedvCpus`, `context`), and returns them from `DescribeComputeEnvironments`. Reported by @smoores-dev (#1088).
 
 ## [1.4.3] — 2026-07-18
