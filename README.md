@@ -486,6 +486,7 @@ subnet = ec2.create_subnet(
 | `AWS::ApiGateway::RestApi` | API ID | RootResourceId |
 | `AWS::ApiGateway::Resource` | Resource ID | — |
 | `AWS::ApiGateway::Method` | Method ID | — |
+| `AWS::ApiGateway::Model` | Model name | — |
 | `AWS::ApiGateway::Deployment` | Deployment ID | — |
 | `AWS::ApiGateway::Stage` | Stage name | — |
 | `AWS::ApiGateway::GatewayResponse` | Response ID | Id |

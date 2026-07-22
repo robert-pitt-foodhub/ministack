@@ -1934,6 +1934,76 @@ def _apigw_method_delete(physical_id, props):
     _apigw_v1._delete_method(api_id, resource_id, http_method)
 
 
+# --- API Gateway Model ---
+
+def _apigw_model_schema(schema):
+    """Convert CFN's Json-valued Schema to API Gateway's string shape."""
+    if schema is None:
+        return ""
+    if isinstance(schema, str):
+        return schema
+    return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
+
+
+def _apigw_model_create(logical_id, props, stack_name):
+    api_id = props.get("RestApiId", "")
+    model_name = props.get("Name") or _physical_name(stack_name, logical_id, max_len=128)
+    data = {
+        "name": model_name,
+        "description": props.get("Description", ""),
+        "contentType": props.get("ContentType", "application/json"),
+        "schema": _apigw_model_schema(props.get("Schema")),
+    }
+    status, headers, body = _apigw_v1._create_model(api_id, data)
+    if status >= 400:
+        raise ValueError(f"AWS::ApiGateway::Model create failed: {body!r}")
+    model = json.loads(body)
+    # AWS CloudFormation Ref returns the model name, not the API-generated id.
+    return model.get("name", model_name), {}
+
+
+def _apigw_model_update(physical_id, old_props, new_props, stack_name):
+    old_api_id = old_props.get("RestApiId", "")
+    new_api_id = new_props.get("RestApiId", "")
+    old_content_type = old_props.get("ContentType", "application/json")
+    new_content_type = new_props.get("ContentType", "application/json")
+    new_name = new_props.get("Name") or physical_id
+
+    # CloudFormation replaces models when their API, name, or content type
+    # changes. The stack engine delegates that replacement lifecycle here.
+    if (old_api_id != new_api_id or physical_id != new_name
+            or old_content_type != new_content_type):
+        _apigw_v1._delete_model(old_api_id, physical_id)
+        return _apigw_model_create(physical_id, new_props, stack_name)
+
+    patch_operations = []
+    old_description = old_props.get("Description", "")
+    new_description = new_props.get("Description", "")
+    if old_description != new_description:
+        patch_operations.append({"op": "replace", "path": "/description", "value": new_description})
+
+    old_schema = _apigw_model_schema(old_props.get("Schema"))
+    new_schema = _apigw_model_schema(new_props.get("Schema"))
+    if old_schema != new_schema:
+        patch_operations.append({"op": "replace", "path": "/schema", "value": new_schema})
+
+    if patch_operations:
+        status, headers, body = _apigw_v1._update_model(new_api_id, physical_id, {
+            "patchOperations": patch_operations,
+        })
+        if status >= 400:
+            raise ValueError(f"AWS::ApiGateway::Model update failed: {body!r}")
+    return physical_id, {}
+
+
+def _apigw_model_delete(physical_id, props):
+    api_id = props.get("RestApiId", "")
+    # Stack deletion is idempotent, including when its RestApi was already
+    # removed or a replacement cleaned up the prior model.
+    if physical_id in _apigw_v1._models.get(api_id, {}):
+        _apigw_v1._delete_model(api_id, physical_id)
+
+
 # --- API Gateway Authorizer ---
 
 def _apigw_authorizer_create(logical_id, props, stack_name):
@@ -4677,6 +4747,11 @@ _RESOURCE_HANDLERS = {
     "AWS::ApiGateway::RestApi": {"create": _apigw_rest_api_create, "delete": _apigw_rest_api_delete},
     "AWS::ApiGateway::Resource": {"create": _apigw_resource_create, "delete": _apigw_resource_delete},
     "AWS::ApiGateway::Method": {"create": _apigw_method_create, "delete": _apigw_method_delete},
+    "AWS::ApiGateway::Model": {
+        "create": _apigw_model_create,
+        "update": _apigw_model_update,
+        "delete": _apigw_model_delete,
+    },
     "AWS::ApiGateway::Authorizer": {"create": _apigw_authorizer_create, "delete": _apigw_authorizer_delete},
     "AWS::ApiGateway::Deployment": {"create": _apigw_deployment_create, "delete": _apigw_deployment_delete},
     "AWS::ApiGateway::Stage": {"create": _apigw_stage_create, "delete": _apigw_stage_delete},

@@ -3967,6 +3967,72 @@ def test_cfn_lambda_s3_ref_bucket_has_code_size(cfn, lam, s3):
     _wait_stack(cfn, stack_name)
 
 
+# -- AWS::ApiGateway::Model --------------------------------------------
+
+
+def test_cfn_apigateway_model_lifecycle(cfn, apigw_v1):
+    """A CDK-style API Gateway model provisions, updates, and deletes through
+    CloudFormation; Ref resolves to the model name and Schema is normalized
+    from CFN's JSON value to the API Gateway string representation."""
+    api_id = apigw_v1.create_rest_api(name="cfn-model-api")["id"]
+    stack_name = f"intg-cfn-model-{_uuid_mod.uuid4().hex[:8]}"
+    model_name = f"AggregatedMetric{_uuid_mod.uuid4().hex[:8]}"
+    schema = {
+        "$schema": "http://json-schema.org/draft-04/schema#",
+        "title": "AggregatedMetric",
+        "type": "object",
+        "properties": {
+            "metric": {"type": "string"},
+            "value": {"type": "number"},
+        },
+        "required": ["metric", "value"],
+    }
+    template = {
+        "Resources": {
+            "SchemasAggregatedMetric": {
+                "Type": "AWS::ApiGateway::Model",
+                "Properties": {
+                    "RestApiId": api_id,
+                    "Name": model_name,
+                    "ContentType": "application/json",
+                    "Description": "Aggregated metric schema",
+                    "Schema": schema,
+                },
+            },
+        },
+        "Outputs": {"ModelName": {"Value": {"Ref": "SchemasAggregatedMetric"}}},
+    }
+
+    cfn.create_stack(StackName=stack_name, TemplateBody=json.dumps(template))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE"
+    outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+    assert outputs["ModelName"] == model_name
+
+    model = apigw_v1.get_model(restApiId=api_id, modelName=model_name)
+    assert model["description"] == "Aggregated metric schema"
+    assert json.loads(model["schema"]) == schema
+
+    updated = json.loads(json.dumps(template))
+    updated_props = updated["Resources"]["SchemasAggregatedMetric"]["Properties"]
+    updated_props["Description"] = "Updated schema"
+    updated_props["Schema"]["properties"]["timestamp"] = {"type": "string"}
+    cfn.update_stack(StackName=stack_name, TemplateBody=json.dumps(updated))
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "UPDATE_COMPLETE"
+
+    model = apigw_v1.get_model(restApiId=api_id, modelName=model_name)
+    assert model["description"] == "Updated schema"
+    assert "timestamp" in json.loads(model["schema"])["properties"]
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+    with pytest.raises(ClientError) as exc:
+        apigw_v1.get_model(restApiId=api_id, modelName=model_name)
+    assert exc.value.response["Error"]["Code"] == "NotFoundException"
+    apigw_v1.delete_rest_api(restApiId=api_id)
+
+
 # -- AWS::ApiGateway::Authorizer ---------------------------------------
 
 
