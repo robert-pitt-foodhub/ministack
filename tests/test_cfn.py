@@ -4935,6 +4935,77 @@ def test_cfn_apigateway_documentation_part_lifecycle(cfn, apigw_v1):
         apigw_v1.delete_rest_api(restApiId=api_id)
 
 
+def test_cfn_apigateway_request_validator_identity(cfn, apigw_v1):
+    """RequestValidator exposes its ID while local requests remain permissive."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-request-validator-{suffix}"
+    api_id = apigw_v1.create_rest_api(name=f"request-validator-{suffix}")["id"]
+
+    def template(name, validate_body):
+        return {
+            "Resources": {
+                "RequestValidator": {
+                    "Type": "AWS::ApiGateway::RequestValidator",
+                    "Properties": {
+                        "RestApiId": api_id,
+                        "Name": name,
+                        "ValidateRequestBody": validate_body,
+                        "ValidateRequestParameters": True,
+                    },
+                },
+            },
+            "Outputs": {
+                "RefId": {"Value": {"Ref": "RequestValidator"}},
+                "GetAttId": {
+                    "Value": {
+                        "Fn::GetAtt": ["RequestValidator", "RequestValidatorId"]
+                    }
+                },
+            },
+        }
+
+    def physical_id():
+        detail = cfn.describe_stack_resource(
+            StackName=stack_name,
+            LogicalResourceId="RequestValidator",
+        )["StackResourceDetail"]
+        return detail["PhysicalResourceId"]
+
+    try:
+        cfn.create_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("body-and-parameters", True)),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+        created_id = physical_id()
+        outputs = {item["OutputKey"]: item["OutputValue"] for item in stack["Outputs"]}
+        assert outputs == {"RefId": created_id, "GetAttId": created_id}
+
+        cfn.update_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("body-and-parameters", False)),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+        assert physical_id() == created_id
+
+        cfn.update_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("replacement", False)),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+        assert physical_id() != created_id
+    finally:
+        try:
+            cfn.delete_stack(StackName=stack_name)
+            _wait_stack(cfn, stack_name)
+        except ClientError:
+            pass
+        apigw_v1.delete_rest_api(restApiId=api_id)
+
+
 # ---------------------------------------------------------------------------
 # ApiGatewayV1 Integration with OpenAPI spec parsing
 # ---------------------------------------------------------------------------

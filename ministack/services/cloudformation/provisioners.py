@@ -2337,6 +2337,25 @@ def _apigw_documentation_part_delete(physical_id, props):
         _apigw_v1._delete_documentation_part(api_id, physical_id)
 
 
+# --- API Gateway RequestValidator ---
+
+def _apigw_request_validator_create(logical_id, props, stack_name):
+    validator_id = new_uuid().replace("-", "")[:8]
+    return validator_id, {"RequestValidatorId": validator_id}
+
+
+def _apigw_request_validator_update(physical_id, old_props, new_props, stack_name):
+    # RestApiId and Name require replacement. Validation flags update in place;
+    # request handling remains deliberately permissive in the local data plane.
+    if any(new_props.get(key) != old_props.get(key) for key in ("RestApiId", "Name")):
+        return _apigw_request_validator_create(physical_id, new_props, stack_name)
+    return physical_id, {"RequestValidatorId": physical_id}
+
+
+def _apigw_request_validator_delete(physical_id, props):
+    pass
+
+
 # --- Lambda EventSourceMapping ---
 
 def _lambda_esm_create(logical_id, props, stack_name):
@@ -5067,6 +5086,11 @@ _RESOURCE_HANDLERS = {
         "create": _apigw_documentation_part_create,
         "update": _apigw_documentation_part_update,
         "delete": _apigw_documentation_part_delete,
+    },
+    "AWS::ApiGateway::RequestValidator": {
+        "create": _apigw_request_validator_create,
+        "update": _apigw_request_validator_update,
+        "delete": _apigw_request_validator_delete,
     },
     "AWS::Lambda::EventSourceMapping": {"create": _lambda_esm_create, "update": _lambda_esm_update, "delete": _lambda_esm_delete},
     "AWS::Lambda::EventInvokeConfig": {
