@@ -9,6 +9,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [1.4.5] — 2026-07-22
 
+### Added
 - **API Gateway v1 — `AWS::ApiGateway::Model` CloudFormation support** — stacks with request/response models failed with `Unsupported resource type: AWS::ApiGateway::Model`. Models now create, update, and delete against the v1 model store; JSON-valued schemas are normalized to the API's string representation and `Ref` returns the model name. Contributed by @robert-pitt-foodhub.
 - **API Gateway v1 — `AWS::ApiGateway::DomainName` CloudFormation support** — CDK custom-domain stacks rolled back with `Unsupported resource type`. Regional and edge domains now provision through the v1 control plane; `Ref` returns the domain name and `Fn::GetAtt` exposes `DistributionDomainName`, `DistributionHostedZoneId`, `DomainNameArn`, `RegionalDomainName`, and `RegionalHostedZoneId`. Contributed by @robert-pitt-foodhub.
 - **API Gateway v1 — `AWS::ApiGateway::BasePathMapping` CloudFormation support** — base path mappings now create, update, replace, and delete; an omitted `BasePath` maps to the root `(none)` mapping and `Ref` returns the mapping's identifier. Contributed by @robert-pitt-foodhub.
