@@ -1942,10 +1942,8 @@ def test_codebuild_region_scoped_state_is_rejected_by_v2_reader(
     assert persistence.load_state("codebuild") is None
 
 
-def test_servicediscovery_region_scoped_state_is_rejected_by_v2_reader(
-    monkeypatch, tmp_path
-):
-    """A rollback binary must reject Cloud Map's regional schema instead of
+def test_mq_region_scoped_state_is_rejected_by_v2_reader(monkeypatch, tmp_path):
+    """A rollback binary must reject MQ's regional schema instead of
     accepting it as v2 and silently dropping every regional store."""
     import json as _json
 
@@ -1954,29 +1952,28 @@ def test_servicediscovery_region_scoped_state_is_rejected_by_v2_reader(
     monkeypatch.setattr(persistence, "PERSIST_STATE", True)
     monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
 
-    namespaces = AccountRegionScopedDict()
-    namespaces.set_scoped(
+    brokers = AccountRegionScopedDict()
+    brokers.set_scoped(
         "000000000000",
         "us-west-2",
-        "ns-regional",
+        "regional-broker",
         {
-            "Arn": (
-                "arn:aws:servicediscovery:us-west-2:000000000000:"
-                "namespace/ns-regional"
+            "brokerArn": (
+                "arn:aws:mq:us-west-2:000000000000:broker:regional-broker"
             )
         },
     )
-    persistence.save_state("servicediscovery", {"namespaces": namespaces})
+    persistence.save_state("mq", {"brokers": brokers})
 
-    raw = _json.loads((tmp_path / "servicediscovery.json").read_text())
+    raw = _json.loads((tmp_path / "mq.json").read_text())
     assert raw["__ministack_format__"] == 3
-    loaded_namespaces = persistence.load_state("servicediscovery")["namespaces"]
-    assert loaded_namespaces.get_scoped(
-        "000000000000", "us-west-2", "ns-regional"
-    )["Arn"].endswith("namespace/ns-regional")
+    loaded_brokers = persistence.load_state("mq")["brokers"]
+    assert loaded_brokers.get_scoped(
+        "000000000000", "us-west-2", "regional-broker"
+    )["brokerArn"].endswith("broker:regional-broker")
 
     monkeypatch.setattr(persistence, "SERVICE_STATE_FORMAT_VERSIONS", {})
-    assert persistence.load_state("servicediscovery") is None
+    assert persistence.load_state("mq") is None
 
 
 def test_ses_region_scoped_state_is_rejected_by_v2_reader(monkeypatch, tmp_path):
