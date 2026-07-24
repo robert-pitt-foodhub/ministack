@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import re
 import time
 import urllib.request
 import uuid as _uuid_mod
@@ -1100,6 +1101,82 @@ def test_cfn_lambda_permission(cfn, lam):
     cfn.delete_stack(StackName="cfn-lambda-perm")
     _wait_stack(cfn, "cfn-lambda-perm")
     lam.delete_function(FunctionName="cfn-perm-fn")
+
+
+def test_cfn_lambda_url_uses_function_url_state(cfn, lam):
+    """CloudFormation Lambda URLs share state with the Lambda Function URL API."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-lambda-url-{suffix}"
+    function_name = f"cfn-url-{suffix}"
+
+    def template(auth_type, invoke_mode):
+        return {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Resources": {
+                "Function": {
+                    "Type": "AWS::Lambda::Function",
+                    "Properties": {
+                        "FunctionName": function_name,
+                        "Runtime": "python3.12",
+                        "Handler": "index.handler",
+                        "Role": "arn:aws:iam::000000000000:role/lambda-role",
+                        "Code": {
+                            "ZipFile": "def handler(event, context):\n    return {'statusCode': 200}\n"
+                        },
+                    },
+                },
+                "FunctionUrl": {
+                    "Type": "AWS::Lambda::Url",
+                    "Properties": {
+                        "TargetFunctionArn": {"Ref": "Function"},
+                        "AuthType": auth_type,
+                        "InvokeMode": invoke_mode,
+                        "Cors": {"AllowOrigins": ["https://example.com"]},
+                    },
+                },
+            },
+            "Outputs": {
+                "UrlRef": {"Value": {"Ref": "FunctionUrl"}},
+                "FunctionArn": {
+                    "Value": {"Fn::GetAtt": ["FunctionUrl", "FunctionArn"]}
+                },
+                "FunctionUrl": {
+                    "Value": {"Fn::GetAtt": ["FunctionUrl", "FunctionUrl"]}
+                },
+            },
+        }
+
+    cfn.create_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("NONE", "BUFFERED")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack["Outputs"]}
+    assert outputs["UrlRef"] == function_name
+    config = lam.get_function_url_config(FunctionName=function_name)
+    assert config["FunctionUrl"] == outputs["FunctionUrl"]
+    assert config["FunctionArn"] == outputs["FunctionArn"]
+    assert config["AuthType"] == "NONE"
+    assert config["InvokeMode"] == "BUFFERED"
+    original_url = config["FunctionUrl"]
+
+    cfn.update_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("AWS_IAM", "RESPONSE_STREAM")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+    config = lam.get_function_url_config(FunctionName=function_name)
+    assert config["FunctionUrl"] == original_url
+    assert config["AuthType"] == "AWS_IAM"
+    assert config["InvokeMode"] == "RESPONSE_STREAM"
+
+    cfn.delete_stack(StackName=stack_name)
+    _wait_stack(cfn, stack_name)
+    assert lam.list_function_url_configs(
+        FunctionName=function_name
+    )["FunctionUrlConfigs"] == []
 
 
 def test_cfn_lambda_permission_qualified_arn_uses_base_function_policy(cfn, lam):
@@ -4203,6 +4280,66 @@ def test_cfn_cloudfront_keyvaluestore_create_update_delete(cfn, cloudfront):
     assert exc.value.response["Error"]["Code"] == "EntityNotFound"
 
 
+def test_cfn_cloudfront_origin_access_identity_attributes(cfn):
+    """CloudFront OAIs expose stable CFN identities and canonical user IDs."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-cloudfront-oai-{suffix}"
+
+    def template(comment):
+        return {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Resources": {
+                "OriginAccessIdentity": {
+                    "Type": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
+                    "Properties": {
+                        "CloudFrontOriginAccessIdentityConfig": {
+                            "Comment": comment,
+                        },
+                    },
+                },
+            },
+            "Outputs": {
+                "OaiRef": {"Value": {"Ref": "OriginAccessIdentity"}},
+                "OaiId": {
+                    "Value": {"Fn::GetAtt": ["OriginAccessIdentity", "Id"]},
+                },
+                "CanonicalUserId": {
+                    "Value": {
+                        "Fn::GetAtt": [
+                            "OriginAccessIdentity",
+                            "S3CanonicalUserId",
+                        ],
+                    },
+                },
+            },
+        }
+
+    cfn.create_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("initial comment")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack["Outputs"]}
+    assert outputs["OaiRef"] == outputs["OaiId"]
+    assert re.fullmatch(r"E[A-Z0-9]{13}", outputs["OaiId"])
+    assert re.fullmatch(r"[0-9a-f]{64}", outputs["CanonicalUserId"])
+
+    original_outputs = outputs
+    cfn.update_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("updated comment")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack["Outputs"]}
+    assert outputs == original_outputs
+
+    cfn.delete_stack(StackName=stack_name)
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "DELETE_COMPLETE"
+
+
 def test_cfn_cloudfront_distribution_supports_invalidations(cfn, cloudfront):
     """A distribution provisioned through CloudFormation must initialize the
     invalidation state used by the native CloudFront API (#1147)."""
@@ -5014,6 +5151,67 @@ def test_cfn_apigateway_documentation_part_lifecycle(cfn, apigw_v1):
         apigw_v1.delete_rest_api(restApiId=api_id)
 
 
+def test_cfn_apigateway_documentation_version_lifecycle(cfn, apigw_v1):
+    """DocumentationVersion has a stable CFN identity and supports replacement."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-documentation-version-{suffix}"
+    api_id = apigw_v1.create_rest_api(name=f"documentation-version-{suffix}")["id"]
+
+    def template(version, description):
+        return {
+            "Resources": {
+                "DocumentationVersion": {
+                    "Type": "AWS::ApiGateway::DocumentationVersion",
+                    "Properties": {
+                        "RestApiId": api_id,
+                        "DocumentationVersion": version,
+                        "Description": description,
+                    },
+                },
+            },
+        }
+
+    def physical_id():
+        detail = cfn.describe_stack_resource(
+            StackName=stack_name,
+            LogicalResourceId="DocumentationVersion",
+        )["StackResourceDetail"]
+        return detail["PhysicalResourceId"]
+
+    try:
+        cfn.create_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("v1", "Created")),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+        created_id = physical_id()
+        assert created_id == f"{api_id}/v1"
+
+        cfn.update_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("v1", "Updated")),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+        assert physical_id() == created_id
+
+        cfn.update_stack(
+            StackName=stack_name,
+            TemplateBody=json.dumps(template("v2", "Replacement")),
+        )
+        stack = _wait_stack(cfn, stack_name)
+        assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+        assert physical_id() == f"{api_id}/v2"
+    finally:
+        try:
+            cfn.delete_stack(StackName=stack_name)
+            _wait_stack(cfn, stack_name)
+        except ClientError:
+            pass
+        apigw_v1.delete_rest_api(restApiId=api_id)
+
+
 # ---------------------------------------------------------------------------
 # ApiGatewayV1 Integration with OpenAPI spec parsing
 # ---------------------------------------------------------------------------
@@ -5217,6 +5415,68 @@ def test_cfn_logs_subscription_filter_provisions(cfn, logs):
     # gone with it — describing it now raises ResourceNotFoundException.
     with pytest.raises(ClientError):
         logs.describe_subscription_filters(logGroupName="/cfn/subfilter-test")
+
+
+def test_cfn_logs_resource_policy_identity_and_lifecycle(cfn):
+    """Logs resource policies expose their policy name without enforcing it."""
+    suffix = _uuid_mod.uuid4().hex[:8]
+    stack_name = f"cfn-logs-policy-{suffix}"
+    policy_name = f"logs-policy-{suffix}"
+
+    def template(statement_sid, name=policy_name):
+        return {
+            "AWSTemplateFormatVersion": "2010-09-09",
+            "Resources": {
+                "LogsPolicy": {
+                    "Type": "AWS::Logs::ResourcePolicy",
+                    "Properties": {
+                        "PolicyName": name,
+                        "PolicyDocument": json.dumps({
+                            "Version": "2012-10-17",
+                            "Statement": [{
+                                "Sid": statement_sid,
+                                "Effect": "Allow",
+                                "Principal": {"Service": "route53.amazonaws.com"},
+                                "Action": "logs:PutLogEvents",
+                                "Resource": "*",
+                            }],
+                        }),
+                    },
+                },
+            },
+            "Outputs": {
+                "PolicyName": {"Value": {"Ref": "LogsPolicy"}},
+            },
+        }
+
+    cfn.create_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("InitialPolicy")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
+    assert stack["Outputs"][0]["OutputValue"] == policy_name
+
+    cfn.update_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("UpdatedPolicy")),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+    assert stack["Outputs"][0]["OutputValue"] == policy_name
+
+    updated_name = f"{policy_name}-updated"
+    cfn.update_stack(
+        StackName=stack_name,
+        TemplateBody=json.dumps(template("UpdatedPolicy", updated_name)),
+    )
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
+    assert stack["Outputs"][0]["OutputValue"] == updated_name
+
+    cfn.delete_stack(StackName=stack_name)
+    stack = _wait_stack(cfn, stack_name)
+    assert stack["StackStatus"] == "DELETE_COMPLETE"
 
 
 def test_cfn_change_set_detects_parameter_driven_change(cfn, s3):
