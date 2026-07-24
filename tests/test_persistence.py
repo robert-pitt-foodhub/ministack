@@ -1832,11 +1832,11 @@ def test_ecs_region_scoped_state_is_rejected_by_v2_reader(monkeypatch, tmp_path)
     assert persistence.load_state("ecs") is None
 
 
-def test_autoscaling_region_scoped_state_is_rejected_by_v2_reader(
+def test_appsync_region_scoped_state_is_rejected_by_v2_reader(
     monkeypatch, tmp_path
 ):
-    """A rollback binary must reject Auto Scaling's regional schema instead
-    of accepting it as v2 and silently dropping every regional store."""
+    """A rollback binary must reject AppSync's regional schema instead of
+    accepting it as v2 and silently dropping every regional store."""
     import json as _json
 
     from ministack.core.responses import AccountRegionScopedDict
@@ -1844,30 +1844,63 @@ def test_autoscaling_region_scoped_state_is_rejected_by_v2_reader(
     monkeypatch.setattr(persistence, "PERSIST_STATE", True)
     monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
 
-    asgs = AccountRegionScopedDict()
-    asgs.set_scoped(
+    apis = AccountRegionScopedDict()
+    apis.set_scoped(
         "000000000000",
         "us-west-2",
-        "regional-asg",
+        "regional-api",
         {
-            "AutoScalingGroupARN": (
-                "arn:aws:autoscaling:us-west-2:000000000000:"
-                "autoScalingGroup:regional:autoScalingGroupName/regional-asg"
-            )
+            "apiId": "regional-api",
+            "arn": "arn:aws:appsync:us-west-2:000000000000:apis/regional-api",
         },
     )
-    persistence.save_state("autoscaling", {"asgs": asgs})
+    persistence.save_state("appsync", {"apis": apis})
 
-    raw = _json.loads((tmp_path / "autoscaling.json").read_text())
+    raw = _json.loads((tmp_path / "appsync.json").read_text())
     assert raw["__ministack_format__"] == 3
-    loaded_asgs = persistence.load_state("autoscaling")["asgs"]
-    assert loaded_asgs.get_scoped(
-        "000000000000", "us-west-2", "regional-asg"
-    )["AutoScalingGroupARN"].endswith("autoScalingGroupName/regional-asg")
+    loaded_apis = persistence.load_state("appsync")["apis"]
+    assert loaded_apis.get_scoped(
+        "000000000000", "us-west-2", "regional-api"
+    )["apiId"] == "regional-api"
 
     # Simulate the previous binary, whose highest understood format is v2.
     monkeypatch.setattr(persistence, "SERVICE_STATE_FORMAT_VERSIONS", {})
-    assert persistence.load_state("autoscaling") is None
+    assert persistence.load_state("appsync") is None
+
+
+def test_emr_region_scoped_state_is_rejected_by_v2_reader(monkeypatch, tmp_path):
+    """A rollback binary must reject EMR regional state instead of dropping it."""
+    import json as _json
+
+    from ministack.core.responses import AccountRegionScopedDict
+
+    monkeypatch.setattr(persistence, "PERSIST_STATE", True)
+    monkeypatch.setattr(persistence, "STATE_DIR", str(tmp_path))
+
+    clusters = AccountRegionScopedDict()
+    clusters.set_scoped(
+        "000000000000",
+        "us-west-2",
+        "j-LEGACYCLUSTER",
+        {
+            "Id": "j-LEGACYCLUSTER",
+            "ClusterArn": (
+                "arn:aws:elasticmapreduce:us-west-2:000000000000:"
+                "cluster/j-LEGACYCLUSTER"
+            ),
+        },
+    )
+    persistence.save_state("emr", {"_clusters": clusters})
+
+    raw = _json.loads((tmp_path / "emr.json").read_text())
+    assert raw["__ministack_format__"] == 3
+    loaded = persistence.load_state("emr")["_clusters"]
+    assert loaded.get_scoped(
+        "000000000000", "us-west-2", "j-LEGACYCLUSTER"
+    )["Id"] == "j-LEGACYCLUSTER"
+
+    monkeypatch.setattr(persistence, "SERVICE_STATE_FORMAT_VERSIONS", {})
+    assert persistence.load_state("emr") is None
 
 
 def test_resource_groups_region_scoped_state_is_rejected_by_v2_reader(
